@@ -55,7 +55,7 @@ func parsePythonFunctionCall(s string) ([]api.ToolCall, bool) {
 		name := s[match[2]:match[3]]
 		args := s[match[4]:match[5]]
 
-		arguments := make(api.ToolCallFunctionArguments)
+		arguments := make(api.ToolCallFunctionArguments, strings.Count(args, ",")+1)
 		if strings.Contains(args, "=") { // Keyword args
 			pairs := strings.SplitSeq(args, ",")
 			for pair := range pairs {
@@ -232,12 +232,20 @@ func parseJSON(s string) ([]api.ToolCall, bool) {
 }
 
 // returns tool calls, partial, success
-func ParseToolCalls(s string, toolToken *string) ([]api.ToolCall, bool, bool) {
+// ParseToolCalls attempts to parse tool calls from a string, handling various formats
+// Returns:
+// - []api.ToolCall: Any successfully parsed tool calls
+// - bool: Whether this is a partial parse that needs more input
+// - error: Any error encountered during parsing, or nil if successful
+func ParseToolCalls(s string, toolToken *string) ([]api.ToolCall, bool, error) {
+	if toolToken == nil {
+		toolToken = new(string)
+	}
 	// [ case can either be JSON, Python or a Tool Token
 	s = strings.TrimSpace(s)
 	fmt.Printf("ParseToolCallsNew input: %q\n", s)
 	if len(s) == 0 {
-		return nil, false, false
+		return nil, false, fmt.Errorf("empty input string")
 	}
 
 	if strings.HasPrefix(s, "[") {
@@ -249,9 +257,9 @@ func ParseToolCalls(s string, toolToken *string) ([]api.ToolCall, bool, bool) {
 			// TODO: mark as JSON partial
 			if calls, ok := parseJSON(s); ok {
 				fmt.Printf("Successfully parsed JSON, found %d calls\n", len(calls))
-				return calls, false, true
+				return calls, false, nil
 			}
-			return nil, true, true
+			return nil, true, nil
 		}
 		// Python Case
 		// We just do a full python check here
@@ -259,50 +267,50 @@ func ParseToolCalls(s string, toolToken *string) ([]api.ToolCall, bool, bool) {
 		tc, ok := parsePythonFunctionCall(s)
 		if ok {
 			fmt.Printf("Successfully parsed Python function: %+v\n", tc)
-			return tc, false, true
+			return tc, false, nil
 		}
 		// Check for partial Python function call
 		if strings.Count(s, "(") > strings.Count(s, ")") {
 			fmt.Println("Found partial Python function call")
-			return nil, true, true
+			return nil, true, nil
 		}
 		// Tool Token Case - this is okay if it's a real tool token and we couldn't get from template
 		fmt.Println("Attempting to derive tool token")
 		if toolToken == nil || *toolToken == "" {
 			toolTok, partial, ok := deriveToolToken(s, "[")
 			if !ok {
-				return nil, false, false
+				return nil, false, fmt.Errorf("invalid tool token format")
 			}
 			if partial {
-				return nil, true, true
+				return nil, true, nil
 			}
 			*toolToken = toolTok
 		}
 		fmt.Printf("Found tool token: %q\n", *toolToken)
 		s = strings.TrimSpace(s[len(*toolToken):])
 		fmt.Printf("Recursing with remaining string: %q\n", s)
-		if toolCalls, partial, ok := ParseToolCalls(s, toolToken); ok {
-			return toolCalls, partial, true
+		if toolCalls, partial, err := ParseToolCalls(s, toolToken); err == nil {
+			return toolCalls, partial, nil
 		}
-		return nil, true, true
+		return nil, true, nil
 	} else if strings.HasPrefix(s, "{") || strings.HasPrefix(s, "```") {
 		fmt.Println("Found { prefix - attempting JSON parse with ", s)
 		if calls, ok := parseJSON(s); ok {
 			fmt.Printf("Successfully parsed JSON object, found %d calls\n", len(calls))
-			return calls, false, true
+			return calls, false, nil
 		}
 		fmt.Println("Failed to parse JSON in JSON case")
 		// TODO: possible case where it never finishes parsing - then what?
-		return nil, true, true
+		return nil, true, nil
 	} else if strings.HasPrefix(s, "<") {
 		fmt.Println("Found < prefix - attempting to derive tool token")
 		if toolToken == nil || *toolToken == "" {
 			toolTok, partial, ok := deriveToolToken(s, "<")
 			if !ok {
-				return nil, false, false
+				return nil, false, fmt.Errorf("invalid tool token format")
 			}
 			if partial {
-				return nil, true, true
+				return nil, true, nil
 			}
 			*toolToken = toolTok
 			fmt.Printf("Found tool token: %q\n", *toolToken)
@@ -310,21 +318,21 @@ func ParseToolCalls(s string, toolToken *string) ([]api.ToolCall, bool, bool) {
 		fmt.Printf("Found tool token: %q\n", *toolToken)
 		s = strings.TrimSpace(s[len(*toolToken):])
 		fmt.Printf("Recursing with remaining string: %q\n", s)
-		if toolCalls, partial, ok := ParseToolCalls(s, toolToken); ok {
-			return toolCalls, partial, true
+		if toolCalls, partial, err := ParseToolCalls(s, toolToken); err == nil {
+			return toolCalls, partial, nil
 		}
-		return nil, true, true
+		return nil, true, nil
 	} else if strings.Contains(s, "(") || len(strings.Fields(s)) == 1 {
 		fmt.Println("Attempting Python function parse")
 		tc, ok := parsePythonFunctionCall(s)
 		if ok {
 			fmt.Printf("Successfully parsed Python function: %+v\n", tc)
-			return tc, false, true
+			return tc, false, nil
 		}
 		fmt.Printf("Failed to parse Python function: %q, returning partial", s)
-		return nil, true, true
+		return nil, true, nil
 	}
 	fmt.Println("No successful parse paths found")
 	fmt.Printf("failed string: %q\n", s)
-	return nil, false, false
+	return nil, false, fmt.Errorf("failed to parse tool calls from input")
 }

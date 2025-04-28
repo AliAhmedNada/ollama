@@ -1585,20 +1585,20 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			startTime := time.Now()
 			// fmt.Println("sb.String()", sb.String())
 			if len(req.Tools) > 0 && checkToolCall {
-				toolCalls, partial, ok := ParseToolCalls(sb.String(), &templateToolToken)
+				toolCalls, partial, err := ParseToolCalls(sb.String(), &templateToolToken)
 				duration := time.Since(startTime)
 				checkCount++
 				minDuration = min(minDuration, duration)
 				maxDuration = max(maxDuration, duration)
 				totalDuration += duration
 				slog.Debug("tool call duration", "duration", duration)
-				if ok {
+				if err == nil {
 					// fmt.Println("toolCalls", toolCalls, partial, ok, duration)
 					if partial {
 						// If the tool call is partial, we need to wait for the next chunk
 						return
 					}
-					slog.Debug("toolCalls", "toolCalls", toolCalls, "partial", partial, "ok", ok)
+					slog.Debug("toolCalls", "toolCalls", toolCalls, "partial", partial, "err", err)
 					res.Message.ToolCalls = toolCalls
 					for i := range toolCalls {
 						toolCalls[i].Function.Index = toolCallIndex
@@ -1643,7 +1643,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				// TODO: work max tool tok logic
 				if len(req.Tools) > 0 && checkToolCall {
 					tb.WriteString(t.Message.Content)
-					if tcs, partial, ok := ParseToolCalls(tb.String(), &templateToolToken); ok {
+					if tcs, partial, err := ParseToolCalls(tb.String(), &templateToolToken); err == nil {
 						if !partial {
 							toolCalls = append(toolCalls, tcs...)
 							resp.Message.Content = ""

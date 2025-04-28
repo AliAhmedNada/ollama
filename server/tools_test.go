@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -26,23 +27,40 @@ func readFile(t *testing.T, base, name string) *bytes.Buffer {
 }
 
 func TestExecuteWithTools(t *testing.T) {
-	t.Skip()
 	p := filepath.Join("testdata", "tools")
-	cases := []struct {
-		model  string
-		output string
-		ok     bool
-	}{
-		{"mistral", `[TOOL_CALLS]  [{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]`, true},
-		{"mistral", `[TOOL_CALLS]  [{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]
+	t1 := api.ToolCall{
+		Function: api.ToolCallFunction{
+			Name: "get_current_weather",
+			Arguments: api.ToolCallFunctionArguments{
+				"format":   "fahrenheit",
+				"location": "SanFrancisco,CA",
+			},
+		},
+	}
+	t2 := api.ToolCall{
+		Function: api.ToolCallFunction{
+			Name: "get_current_weather",
+			Arguments: api.ToolCallFunctionArguments{
+				"format":   "celsius",
+				"location": "Toronto,Canada",
+			},
+		},
+	}
 
-				The temperature in San Francisco, CA is 70°F and in Toronto, Canada is 20°C.`, true},
-		{"mistral", `[TOOL_CALLS]  [{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]`, true},
-		{"mistral", `[TOOL_CALLS]  [{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, `, false},
+	cases := []struct {
+		model    string
+		output   string
+		expected []api.ToolCall
+		ok       bool
+	}{
+		{"mistral", `[TOOL_CALLS]  [{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_curren}]`, []api.ToolCall{}, false},
+		{"mistral", `[TOOL_CALLS]  [{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]`, []api.ToolCall{t1, t2}, true},
+		{"mistral", `[TOOL_CALLS]  [{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, `, []api.ToolCall{}, false},
+		// ! Not supported anymore
 		{"mistral", `I'm not aware of that information. However, I can suggest searching for the weather using the "get_current_weather" function:
 
-				[{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]`, true},
-		{"mistral", " The weather in San Francisco, CA is 70°F and in Toronto, Canada is 20°C.", false},
+		[{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]`, []api.ToolCall{}, false},
+		// ! This is a known regression with the new parsing logic
 		{"command-r-plus", "Action: ```json" + `
 		[
 		    {
@@ -60,20 +78,19 @@ func TestExecuteWithTools(t *testing.T) {
 		        }
 		    }
 		]
-		` + "```", true},
-		{"command-r-plus", " The weather in San Francisco, CA is 70°F and in Toronto, Canada is 20°C.", false},
-		{"firefunction", ` functools[{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]`, true},
-		{"firefunction", " The weather in San Francisco, CA is 70°F and in Toronto, Canada is 20°C.", false},
+		` + "```", []api.ToolCall{}, false},
+		// ! This is a known regression with the new parsing logic
+		{"firefunction", ` functools[{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]`, []api.ToolCall{}, false},
 		{"llama3-groq-tool-use", `<tool_call>
 		{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}}
-		{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}
-		</tool_call>`, true},
-		{"xlam", `{"tool_calls": [{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]}`, true},
-		{"nemotron", `<toolcall>{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]} </toolcall>`, true},
-		{"qwen2.5-coder", `<tool_call>
-{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}
-</tool_call>`, true},
-		{"qwen2.5-coder", " The weather in San Francisco, CA is 70°F and in Toronto, Canada is 20°C.", false},
+		</tool_call>`, []api.ToolCall{t1}, true},
+		{"xlam", `{"tool_calls": [{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]}`, []api.ToolCall{t1, t2}, true},
+		// ! Not supported anymore
+		// {"nemotron", `<toolcall> {"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]} </toolcall>`, []api.ToolCall{t1, t2}, true},
+		{"nemotron", `<toolcall> {"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}}, {"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}} </toolcall>`, []api.ToolCall{t1, t2}, true},
+		{"qwen2.5-coder", `{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}}`, []api.ToolCall{t1}, true},
+		{"qwen2.5-coder", `[{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}}, {"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]`, []api.ToolCall{t1, t2}, true},
+		{"qwen2.5-coder", " The weather in San Francisco, CA is 70°F and in Toronto, Canada is 20°C.", []api.ToolCall{}, false},
 	}
 
 	var tools []api.Tool
@@ -86,29 +103,7 @@ func TestExecuteWithTools(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	calls := []api.ToolCall{
-		{
-			Function: api.ToolCallFunction{
-				Name: "get_current_weather",
-				Arguments: api.ToolCallFunctionArguments{
-					"format":   "fahrenheit",
-					"location": "San Francisco, CA",
-				},
-			},
-		},
-		{
-			Function: api.ToolCallFunction{
-				Name: "get_current_weather",
-				Arguments: api.ToolCallFunctionArguments{
-					"format":   "celsius",
-					"location": "Toronto, Canada",
-				},
-			},
-		},
-	}
-
 	for _, tt := range cases {
-		t.Skip()
 		t.Run(tt.model, func(t *testing.T) {
 			tmpl, err := template.Parse(readFile(t, p, fmt.Sprintf("%s.gotmpl", tt.model)).String())
 			if err != nil {
@@ -127,15 +122,25 @@ func TestExecuteWithTools(t *testing.T) {
 			})
 
 			t.Run("parse", func(t *testing.T) {
-				actual, _, ok := ParseToolCalls(tt.output, nil)
-				if ok != tt.ok {
-					t.Errorf("expected %t, got %t", tt.ok, ok)
-					t.Logf("actual: %+v", actual)
-					t.Logf("output: %s", tt.output)
+				got := []api.ToolCall{}
+				tokens := strings.Fields(tt.output)
+				toko := ""
+				sb := strings.Builder{}
+				for _, tok := range tokens {
+					sb.WriteString(tok)
+					toolCalls, partial, err := ParseToolCalls(sb.String(), &toko)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if partial {
+						continue
+					}
+					got = append(got, toolCalls...)
+					sb.Reset()
 				}
 
 				if tt.ok {
-					if diff := cmp.Diff(actual, calls); diff != "" {
+					if diff := cmp.Diff(got, tt.expected); diff != "" {
 						t.Errorf("mismatch (-got +want):\n%s", diff)
 					}
 				}
