@@ -215,9 +215,39 @@ func TestParsePythonValue(t *testing.T) {
 			want:  []any{1, "two", 3.0, true},
 		},
 		{
-			name:  "invalid list - string fallback",
+			name:  "invalid list",
 			input: "[1, 2,",
-			want:  "[1, 2,",
+			want:  nil,
+			err:   true,
+		},
+		{
+			name:  "dictionaries",
+			input: "{'a': 1, 'b': 2}",
+			want:  map[any]any{"a": 1, "b": 2},
+			err:   false,
+		},
+		{
+			name:  "int dictionary",
+			input: "{1: 2}",
+			want:  map[any]any{1: 2},
+			err:   false,
+		},
+		{
+			name:  "mixed type dictionary",
+			input: "{'a': 1, 'b': 2.0, 'c': True}",
+			want:  map[any]any{"a": 1, "b": 2.0, "c": true},
+			err:   false,
+		},
+		{
+			name:  "invalid dictionary - missing closing brace",
+			input: "{'a': 1, 'b': 2",
+			want:  nil,
+			err:   true,
+		},
+		{
+			name:  "sets",
+			input: "{1, 2, 3}",
+			want:  []any{1, 2, 3},
 			err:   false,
 		},
 	}

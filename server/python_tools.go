@@ -83,8 +83,76 @@ func parsePythonValue(value string) (any, error) {
 		return list, nil
 	}
 
-	// string fallback
-	return value, nil
+	// dictionary
+	if strings.HasPrefix(value, "{") && strings.HasSuffix(value, "}") && strings.Contains(value, ":") {
+		dictStr := value[1 : len(value)-1]
+		dict := make(map[any]any)
+		stack := []rune{}
+		start := 0
+		for i, char := range dictStr {
+			if len(stack) != 0 && char == braces[stack[len(stack)-1]] {
+				stack = stack[:len(stack)-1]
+			} else if _, ok := braces[char]; ok {
+				stack = append(stack, char)
+			}
+			if len(stack) == 0 && (char == ',' || i == len(dictStr)-1) {
+				end := i
+				if i == len(dictStr)-1 {
+					end = i + 1
+				}
+				item := strings.TrimSpace(dictStr[start:end])
+				kv := strings.SplitN(item, ":", 2)
+				if len(kv) != 2 {
+					return nil, fmt.Errorf("invalid dictionary key-value pair: %s", item)
+				}
+
+				key, err := parsePythonValue(strings.TrimSpace(kv[0]))
+				if err != nil {
+					return nil, fmt.Errorf("invalid dictionary key: %s", kv[0])
+				}
+
+				val, err := parsePythonValue(strings.TrimSpace(kv[1]))
+				if err != nil {
+					return nil, fmt.Errorf("invalid dictionary value: %s", kv[1])
+				}
+
+				dict[key] = val
+				start = i + 1
+			}
+		}
+		return dict, nil
+	}
+
+	// sets (stored as lists)
+	if strings.HasPrefix(value, "{") && strings.HasSuffix(value, "}") {
+		setStr := value[1 : len(value)-1]
+		var list []any
+		stack := []rune{}
+		start := 0
+		for i, char := range setStr {
+			if len(stack) != 0 && char == braces[stack[len(stack)-1]] {
+				stack = stack[:len(stack)-1]
+			} else if _, ok := braces[char]; ok {
+				stack = append(stack, char)
+			}
+			if len(stack) == 0 && (char == ',' || i == len(setStr)-1) {
+				end := i
+				if i == len(setStr)-1 {
+					end = i + 1
+				}
+				item := strings.TrimSpace(setStr[start:end])
+				if val, err := parsePythonValue(item); err == nil {
+					list = append(list, val)
+				} else {
+					return nil, fmt.Errorf("invalid set item: %s", item)
+				}
+				start = i + 1
+			}
+		}
+		return list, nil
+	}
+
+	return nil, fmt.Errorf("invalid Python value: %s", value)
 }
 
 // parsePythonFunctionCall parses Python function calls from a string
