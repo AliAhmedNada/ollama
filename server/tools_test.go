@@ -47,6 +47,7 @@ func TestExecuteWithTools(t *testing.T) {
 		},
 	}
 
+	// TODO: these cases do not have tool tokens
 	cases := []struct {
 		model    string
 		output   string
@@ -56,7 +57,7 @@ func TestExecuteWithTools(t *testing.T) {
 		{"mistral", `[TOOL_CALLS]  [{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_curren}]`, []api.ToolCall{}, false},
 		{"mistral", `[TOOL_CALLS]  [{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]`, []api.ToolCall{t1, t2}, true},
 		{"mistral", `[TOOL_CALLS]  [{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, `, []api.ToolCall{}, false},
-		// ! Not supported anymore
+		// ! Not supported anymore - need tool token in order to parse
 		{"mistral", `I'm not aware of that information. However, I can suggest searching for the weather using the "get_current_weather" function:
 
 		[{"name": "get_current_weather", "arguments": {"format":"fahrenheit","location":"San Francisco, CA"}},{"name": "get_current_weather", "arguments": {"format":"celsius","location":"Toronto, Canada"}}]`, []api.ToolCall{}, false},
@@ -145,6 +146,90 @@ func TestExecuteWithTools(t *testing.T) {
 					}
 				}
 			})
+		})
+	}
+}
+
+func TestParseToolCallsPython(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		expected  []api.ToolCall
+		toolToken *string
+	}{
+		{
+			name:  "simple python function",
+			input: "get_current_weather(format='fahrenheit', location='San Francisco, CA')",
+			expected: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Name: "get_current_weather",
+						Arguments: api.ToolCallFunctionArguments{
+							"format":   "fahrenheit",
+							"location": "San Francisco, CA",
+						},
+					},
+				},
+			},
+			toolToken: nil,
+		},
+		{
+			name:  "tool call with tool token",
+			input: "<tool_call> get_current_weather(format='fahrenheit', location='San Francisco, CA')</tool_call>",
+			expected: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Name: "get_current_weather",
+						Arguments: api.ToolCallFunctionArguments{
+							"format":   "fahrenheit",
+							"location": "San Francisco, CA",
+						},
+					},
+				},
+			},
+			toolToken: func() *string { s := "<tool_call>"; return &s }(),
+		},
+		{
+			name:  "tool call with derived tool token",
+			input: "<tool_call> get_current_weather(format='fahrenheit', location='San Francisco, CA')</tool_call>",
+			expected: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Name: "get_current_weather",
+						Arguments: api.ToolCallFunctionArguments{
+							"format":   "fahrenheit",
+							"location": "San Francisco, CA",
+						},
+					},
+				},
+			},
+			toolToken: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := []api.ToolCall{}
+			tokens := strings.Fields(tc.input)
+			toolToken := tc.toolToken
+			sb := strings.Builder{}
+
+			for _, tok := range tokens {
+				sb.WriteString(" " + tok)
+				toolCalls, partial, err := ParseToolCalls(sb.String(), toolToken)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if partial {
+					continue
+				}
+				got = append(got, toolCalls...)
+				sb.Reset()
+			}
+
+			if diff := cmp.Diff(got, tc.expected); diff != "" {
+				t.Errorf("mismatch (-got +want):\n%s", diff)
+			}
 		})
 	}
 }

@@ -1529,8 +1529,18 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		var toolCallIndex int = 0
 		// var prefix string
 		// var templateToolToken string
-		_, templateToolToken, _ := m.TemplateToolToken()
-		// fmt.Println("special token", templateToolToken)
+		found, ok := textAfterToolCalls(m.Template.Template)
+		if !ok {
+			slog.Debug("no tool calls template node found")
+		} else {
+			slog.Debug("found tool calls template node", "template", found)
+		}
+		templateToolToken, ok := ToolToken(found)
+		if !ok {
+			slog.Debug("no tool token found")
+		} else {
+			slog.Debug("found tool token", "token", templateToolToken)
+		}
 
 		var minDuration time.Duration = math.MaxInt64
 		var maxDuration time.Duration
@@ -1562,15 +1572,16 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				slog.Debug("total duration", "duration", totalDuration)
 				slog.Debug("check count", "count", checkCount)
 				// slog.Debug("average duration", "duration", totalDuration/time.Duration(checkCount))
-				// if sb.Len() > 0 {
-				// 	res.Message.Content = sb.String()
-				// }
+				// TODO: revisit to see if this is needed
+				if sb.Len() > 0 {
+					res.Message.Content = sb.String()
+				}
 				res.DoneReason = r.DoneReason.String()
 				res.TotalDuration = time.Since(checkpointStart)
 				res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 			}
 
-			// TODO: tool call checking and filtering should be moved outside of this callback once streaming
+			// TODO(parthsareen): tool call checking and filtering should be moved outside of this callback once streaming
 			// however this was a simple change for now without reworking streaming logic of this (and other)
 			// handlers
 			if req.Stream != nil && !*req.Stream || len(req.Tools) == 0 {
@@ -1583,8 +1594,9 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			// This ensures that content is cleared from the message on the last chunk sent
 			sb.WriteString(r.Content)
 			startTime := time.Now()
-			// fmt.Println("sb.String()", sb.String())
+			fmt.Println("sb.String()", sb.String())
 			if len(req.Tools) > 0 && checkToolCall {
+				fmt.Println("parsing tool calls", sb.String())
 				toolCalls, partial, err := ParseToolCalls(sb.String(), &templateToolToken)
 				duration := time.Since(startTime)
 				checkCount++
@@ -1595,6 +1607,10 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				if err == nil {
 					// fmt.Println("toolCalls", toolCalls, partial, ok, duration)
 					if partial {
+						// circuit break to remove tool end token
+						if len(toolCalls) > 0 {
+							sb.Reset()
+						}
 						// If the tool call is partial, we need to wait for the next chunk
 						return
 					}
@@ -1608,8 +1624,12 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					sb.Reset()
 					ch <- res
 					// TODO: revisit this
-					// Only way to have multiple calls is to have []
-					checkToolCall = false
+					// Only way to have multiple calls is to have [] which is derived or provided
+					// ! if the token is derived we should still set to false?
+					// TODO: define the behavior for derived tool tokens
+					if templateToolToken == "" {
+						checkToolCall = false
+					}
 					slog.Debug("fired on tool call", "toolCalls", toolCalls, "toolCallIndex", toolCallIndex)
 					return
 				}
@@ -1618,10 +1638,16 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			// Send any remaining content if no tool calls were detected
 			// if toolCallIndex == 0 {
 			// fmt.Println("toolCallIndex", toolCallIndex)
+			// All tools will get sent downstream together based on the parsing
 			// TODO: base this off if we can get a template tool token
-			checkToolCall = false
+			if templateToolToken == "" {
+				checkToolCall = false
+			}
 			res.Message.Content = sb.String()
 			sb.Reset()
+			if res.Message.Content == "</tool_call>" {
+				fmt.Println("found token!!!!")
+			}
 			ch <- res
 		}); err != nil {
 			ch <- gin.H{"error": err.Error()}

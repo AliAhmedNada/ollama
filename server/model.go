@@ -12,6 +12,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	gotmpl "text/template"
 	"text/template/parse"
 
 	"github.com/ollama/ollama/api"
@@ -129,9 +130,112 @@ func detectContentType(r io.Reader) (string, error) {
 	return "unknown", nil
 }
 
+// textAfterToolCalls finds the immediate following text after any IfNode containing ".ToolCalls"
+func textAfterToolCalls(tmpl *gotmpl.Template) (string, bool) {
+	if tmpl == nil || tmpl.Tree == nil {
+		return "", false
+	}
+
+	var result string
+	var found bool
+
+	var walk func(nodes []parse.Node)
+	walk = func(nodes []parse.Node) {
+		for _, node := range nodes {
+			if found {
+				return
+			}
+
+			switch n := node.(type) {
+			case *parse.IfNode:
+				if nodeContainsToolCalls(n) {
+					// Collect immediate TextNode(s) at start of IfNode's list
+					var sb strings.Builder
+					for _, innerNode := range n.List.Nodes {
+						if tn, ok := innerNode.(*parse.TextNode); ok {
+							sb.Write(tn.Text)
+						} else {
+							// Stop at first non-text node
+							break
+						}
+					}
+					result = sb.String()
+					found = true
+					return
+				}
+				// Recurse into child nodes
+				walk(n.List.Nodes)
+				if n.ElseList != nil {
+					walk(n.ElseList.Nodes)
+				}
+			case *parse.ListNode:
+				walk(n.Nodes)
+			case *parse.RangeNode:
+				walk(n.List.Nodes)
+				if n.ElseList != nil {
+					walk(n.ElseList.Nodes)
+				}
+			case *parse.WithNode:
+				walk(n.List.Nodes)
+				if n.ElseList != nil {
+					walk(n.ElseList.Nodes)
+				}
+			default:
+				// Continue to next node
+				continue
+			}
+
+			if found {
+				return
+			}
+		}
+	}
+
+	walk(tmpl.Tree.Root.Nodes)
+	return result, found
+}
+
+// Helper to detect if a node's condition includes ".ToolCalls"
+func nodeContainsToolCalls(n *parse.IfNode) bool {
+	for _, cmd := range n.Pipe.Cmds {
+		for _, arg := range cmd.Args {
+			if field, ok := arg.(*parse.FieldNode); ok {
+				for _, ident := range field.Ident {
+					if ident == "ToolCalls" {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func ToolToken(found string) (string, bool) {
+	if found == "" {
+		return "", false
+	}
+	start := -1
+	end := -1
+	for i, r := range found {
+		if r == '<' || r == '[' {
+			start = i
+		}
+		if (r == '>' || r == ']') && start != -1 {
+			end = i
+			break
+		}
+	}
+	if start == -1 || end == -1 {
+		return "", false
+	}
+	return found[start : end+1], true
+}
+
 // Get tool call token from model template
 func (m *Model) TemplateToolToken() (string, string, bool) {
 	// Try to detect the tool call format from the model's template
+	slog.Debug("attempting to detect tool call format from template")
 	tmpl := m.Template.Subtree(func(n parse.Node) bool {
 		if t, ok := n.(*parse.RangeNode); ok {
 			return slices.Contains(template.Identifiers(t.Pipe), "ToolCalls")
@@ -140,6 +244,7 @@ func (m *Model) TemplateToolToken() (string, string, bool) {
 	})
 
 	if tmpl != nil {
+		slog.Debug("found tool calls template node")
 		// Execute template with test data to see the format
 		var b bytes.Buffer
 		if err := tmpl.Execute(&b, map[string][]api.ToolCall{
@@ -158,32 +263,43 @@ func (m *Model) TemplateToolToken() (string, string, bool) {
 			output := strings.TrimSpace(b.String())
 			slog.Debug("tool call template output", "output", output)
 			if strings.Contains(output, "<") {
+				slog.Debug("found < token in output")
 				// Extract the special token between < and >
 				start := strings.Index(output, "<")
 				end := strings.Index(output, ">")
 				if start >= 0 && end > start {
 					token := output[start : end+1]
+					slog.Debug("extracted token", "token", token)
 					return output, token, true
 				}
 			} else if strings.Contains(output, "[") {
+				slog.Debug("found [ token in output")
 				// Check if it's a tool call token rather than JSON array
 				start := strings.Index(output, "[")
 				end := strings.Index(output, "]")
 				if start >= 0 && end > start {
 					token := output[start : end+1]
+					slog.Debug("potential token", "token", token)
 					// There shouldn't be spaces in a special token
 					if len(strings.Fields(token)) > 1 {
+						slog.Debug("token contains spaces, not a valid token")
 						return "", "", false
 					}
 
 					// Only consider it a token if it's not valid JSON
 					var jsonTest any
 					if err := json.Unmarshal([]byte(token), &jsonTest); err != nil {
+						slog.Debug("token is not valid JSON, treating as tool token")
 						return output, token, true
 					}
+					slog.Debug("token is valid JSON, not a tool token")
 				}
 			}
+		} else {
+			slog.Debug("failed to execute template", "error", err)
 		}
+	} else {
+		slog.Debug("no tool calls template node found")
 	}
 	return "", "", false
 }
